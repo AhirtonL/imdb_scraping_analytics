@@ -1,0 +1,362 @@
+---
+title: "R/Databricks e Csv's/NoSql - Estudo IMDB"
+output: html_notebook
+---
+
+O que e o IMDB: atualmente, a fonte mais popular do mundo para se encontrar detalhes e trivias quanto a filmes, programas de TV e celebridades. 
+
+Motivaco e Objetivo: O objetivo deste relatorio e realizar uma analise sobre a lista de 250 filmes retirados do IMDB e algumas das tendencias que podem ser encontradas a partir desses dados.
+
+O URL de acesso para se capturar os 250 principais filmes armazenados para analise e a seguinte: http://www.imdb.com/chart/top
+
+Tais dados podem ser utilizados para se coletar v??rios atributos tais como:
+
+* Nome do filme // * Diretor do filme // * Estrelas no filme
+* Generos // * Taglines dos filmes (frases de efeito)
+* Enredo  // * Orcamento de bilheteria - budget (se exibido, em $) // * Ganho de bilheteria - gross (se exibido, em $)
+
+```{r}
+
+# Instalando e carregando pacotes
+# Plyr/Dplyr - ferramentas para se fazer divisoes, aplicacoes e combinacoes 
+# Pacman - ferramenta de gerenciamento de pacotes
+
+library(plyr)
+if (!require("pacman")) install.packages("pacman")
+```
+
+#Etapa de Crawling e Scraping
+
+```{r}
+pacman::p_load("rvest","XML","stringi")
+
+#Diretorio de trabalho de sua preferencia
+setwd("Desktop")
+
+#URL do site IMDB onde estao listados todos os 250 filmes
+url = "http://www.imdb.com/chart/top"
+
+#Leitura do texto html
+page = read_html(url)
+
+#Filtrando dados html via css 
+movie.nodes = html_nodes(page,'.titleColumn a')
+
+#Extraindo as informacoes link, nome e atores dos nos do filme os guardando em vetores diferentes para cada campo
+movie.link = sapply(html_attrs(movie.nodes),`[[`,'href')
+movie.link =paste0("http://www.imdb.com",movie.link)
+movie.cast = sapply(html_attrs(movie.nodes),`[[`,'title')
+movie.name = html_text(movie.nodes)
+
+#Foi utilizado o SelectorGadget para se ter acesso ao css
+year = gsub(")","", gsub("\\(","", html_text(html_nodes(page,'.secondaryInfo'))))
+
+#Extraindo notas para cada um dos filmes
+rating.nodes = html_nodes(page,'.imdbRating')
+rating.nodes = html_nodes(page,'.imdbRating strong')
+votes = as.numeric(gsub(',','',
+                        gsub(' user ratings','',
+                             gsub('.*?based on ','',
+                                  sapply(html_attrs(rating.nodes),`[[`,'title')
+                             ))))
+
+rating = as.numeric(html_text(rating.nodes))
+
+#Criando variavel para que sejam armazenadas linhas no dataset
+rows <- length(movie.name)
+
+#Criando dataframe para o mesmo
+rank <- c(1:rows)
+top250 = data.frame(rank,movie.name, movie.cast, movie.link,year,votes,rating)
+
+#Salvando em arquivo .csv
+write.csv(top250,'IMDB Top 250.csv', row.names = F)
+
+#Tal CSV foi utilizado para a cria????o de base NoSQL funcionando junto a cluster de 1 n?? no servi??o DataBricks (https://databricks.com/)
+```
+
+#Primeiro Insight - Genero dos Filmes Melhor Votados no IMDB
+
+```{r}
+
+#Criando vetores para armazenar dados das diferentes colunas
+directors <- c(1:rows)
+movie.stars <- c(1:rows)
+taglines <- c(1:rows)
+storyline <- c(1:rows)
+generes <- c(1:rows)
+movie.budget <- c(1:rows)
+movie.gross <- c(1:rows)
+
+#i usado como contador para indicar a primeira posicao a ser "lida"
+i <- 1
+
+#Loop por todos os links de todos os 250 filmes
+for(link in top250$movie.link) {
+  
+  #Podem ser resgatados detalhes tais * Nome do filme // * Diretor do filme // * Estrelas no filme * Generos // * Taglines dos filmes (frases de efeito) * Enredo  // * Orcamento de bilheteria - budget (se exibido, em $) // * Ganho de bilheteria - gross (se exibido, em $)
+  page <- read_html(link)
+  nodes <- html_nodes(page,".txt-block")
+  nodes <- html_text(nodes)
+  for (variable in nodes) {
+    variable
+  }
+  
+  #Extraindo o genero dos diferentes filmes
+  node <- html_nodes(page,".canwrap")
+  canwrap <- html_text(node)
+  canwrap <- gsub("\n", "", canwrap)
+  pos <- regexpr(':', canwrap[3])
+  genereList <- substr(canwrap[3], pos+1,nchar(canwrap[3]))
+  genereList <- gsub("^ *|(?<= ) | *$", "", genereList, perl=T)
+  genereList <- gsub("[|]", ",", genereList, perl=T) 
+  generes[i] <- genereList
+
+    #Incremento para que seja tratado o proximo filme
+  i = i + 1
+}
+```
+
+```{r}
+splitgenre <- strsplit(as.character(top250_movies_details$generes), ',') #Split dos diferentes generos de um mesmo filme
+unlistgenre <- data.frame(genre=unlist(splitgenre)) #Convers??o para uma coluna
+genre <- stri_trim(unlistgenre$genre) #Remocao de espacos
+genresummary <- data.frame(table(genre)) #Contagem de cada filme para cada diferente genero
+
+#Salvando em arquivo .csv
+write.csv(genresummary, 'GenreOfTop250Movies.csv', row.names = F)
+```
+
+```{r}
+p1 <- ggplot(genresummary, aes(x=genre, y=Freq)) + 
+  geom_bar(stat='identity') +
+  ggtitle("Contagem de Filmes por Genero") +  
+  ylab("Count") + xlab("Genres") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+  theme(plot.title = element_text(face="bold")) +
+  theme(axis.title.x = element_text( face="bold")) +
+  theme(axis.title.y = element_text( face="bold"))  
+p1
+```
+
+
+#Segundo Insight - Ganho vs. Gastos da Produ????o
+
+
+```{r}
+#Iteracao para cada um dos diferentes filmes
+for(i in 1:250){
+  
+  url = movielink[i]
+  page = read_html(url)
+  
+  directornode = html_nodes(page,'.credit_summary_item') # director node 
+  director = html_text(directornode)
+  directorname = director[1]
+  directorname = str_trim(gsub("Director:","",gsub("\n","",directorname))) 
+  director_name[i] = directorname #Nome do diretor
+  
+  head(director_name)
+  
+  starsnames = director[3] 
+  starsnames = str_trim(gsub("??","",gsub("\\|","",gsub("See full cast & crew","",
+                                                       gsub("Stars:","",gsub("\n","",starsnames)))))) # stars
+  stars[i] = starsnames #Nome dos atores/estrelas
+  
+  head(stars)
+  
+  taglines_node = html_nodes(page,'.txt-block') #Frases de efeito (taglines)
+  xmlTreeParse(taglines_node[[1]])
+  taglines = html_text(taglines_node[[1]])
+  l = grep("Taglines", taglines)
+  if (length(l) == 1) {
+    tag_lines = gsub("See more","",gsub("??","",gsub("Taglines:","",gsub("\n","",taglines))))
+    tag_lines =str_trim(tag_lines)
+    tagline[i] = tag_lines
+  } else {
+    tagline[i] = "" 
+  }
+  
+  head(tagline)
+  
+  genres_node = html_nodes(page,'.canwrap') #Generos
+  xmlTreeParse(genres_node[[3]])
+  genres_name = html_text(genres_node[[3]])
+  genres_name
+  genresname = str_trim(gsub("Genres:","",gsub("\n","",genres_name)))
+  genres[i] = genresname
+  
+  head(genres)
+  
+  storyline_node = html_nodes(page,'.canwrap') #Enredo
+  xmlTreeParse(storyline_node[[1]])
+  story_line = html_text(storyline_node[[1]])
+  story_line = str_trim(gsub("\n","",story_line))
+  story_line = str_sub(story_line,0,250)
+  storyline[i] = story_line
+  
+  head(storyline)
+  
+  boxoffice_node = html_nodes(page,'.txt-block') #Or??amento
+  xmlTreeParse(boxoffice_node[[1]])
+  
+  n = length(boxoffice_node)
+  
+  for(j in 1:n){
+    
+    budgettotal = html_text(boxoffice_node[j])  
+    g = grep("Budget:", budgettotal)
+    #print (g)
+    if (length(g) == 1) {
+      #  print (budgettotal)
+      budget_total = gsub(",","",
+                          str_trim(gsub("[(\\$)(\\???)(\\??)(AUD)(DEM)(JPY)(RUR)(INR)(FRF)]","",
+                                        gsub(")","",
+                                             gsub("\\(","",
+                                                  gsub("estimated","",
+                                                       gsub("Budget:","",
+                                                            gsub("\n","",
+                                                                 budgettotal
+                                                            )
+                                                       )
+                                                  )
+                                             )
+                                        )
+                          )
+                          )
+      ) 
+      
+      budget[i] = as.numeric(budget_total)
+    }
+    p = grep("Gross:", budgettotal)
+    #print (p)
+    if (length(p) == 1) {
+      #print (budgettotal)
+      gross_total = str_trim(gsub("\\$","",
+                                  gsub(")","",
+                                       gsub("\\(","",
+                                            gsub("USA","",
+                                                 gsub("Gross:","",
+                                                      gsub("\n","",budgettotal)
+                                                      )
+                                                 )
+                                            )
+                                       )
+                                  )
+                             )
+      gross_split = strsplit(gross_total," ")
+      gross[i] = as.numeric(gsub(",","",gross_split[[1]][1]))
+    }
+  } 
+  
+}
+```
+
+```{r}
+moviedata = data.frame(moviename, director_name, stars, genres, tagline, storyline, budget, gross) 
+head(moviedata)
+write.csv(moviedata,'moviedata.csv', row.names = F)
+```
+
+```{r}
+#Lendo o dataset moviedata
+moviedata <- read.csv('moviedata.csv')
+
+#Separando os filmes em um genero e multi genero
+multi_genre_movies <- moviedata[grep("\\|", moviedata$genres), ]
+single_genre_movies <- moviedata[!grepl("\\|", moviedata$genres), ]
+
+director_name = 0
+stars = 0
+tagline = 0
+genres = NULL
+storyline = 0
+budget = 0
+gross = 0
+moviename = 0
+count = 0
+
+multi_genre_movies <- multi_genre_movies[order(multi_genre_movies$moviename),] 
+k=1
+
+#Iteracao para separacao de generos em filmes multi genero
+for (i in 1:nrow(multi_genre_movies)){
+  
+  movie_genre <- as.character(multi_genre_movies$genres[i])
+  movie_genre <- strsplit(movie_genre, "\\|")
+  movie_genre <- matrix(unlist(movie_genre))
+  
+  for(j in 1:length(movie_genre)){
+    
+    moviename[k] <- str_trim(multi_genre_movies$moviename[i])
+    
+    if(grepl("Directors: ", multi_genre_movies$director_name[i])){
+      director_name[k] <-  str_trim(gsub("Directors: ","",multi_genre_movies$director_name[i]))
+    }else{
+      director_name[k] <-  str_trim(multi_genre_movies$director_name[i])
+    }
+    
+    stars[k] <-  str_trim(multi_genre_movies$stars[i])
+    genres[k] <-  str_trim(movie_genre[j])
+    tagline[k] <-  str_trim(multi_genre_movies$tagline[i])
+    storyline[k] <-  str_trim(multi_genre_movies$storyline[i])
+    budget[k] <-  str_trim(multi_genre_movies$budget[i])
+    gross[k] <-  str_trim(multi_genre_movies$gross[i])
+    
+    k <- k + 1
+  }
+}
+
+#Criando novo dataset a partir da separa????o
+moviedata_new <- data.frame(moviename, director_name, stars, genres, tagline, storyline, budget, gross) 
+
+single_genre_movies$genres <- factor(single_genre_movies$genres)
+moviedata_new$budget <- as.numeric(levels(moviedata_new$budget))[moviedata_new$budget]
+moviedata_new$gross <- as.numeric(levels(moviedata_new$gross))[moviedata_new$gross]
+
+#Combinando filmes um e multi genero
+all_moviedata <- rbind(single_genre_movies,moviedata_new)
+```
+
+```{r}
+#Calculando a media de faturamento de bilheteria
+non_gross_df <- all_moviedata[!is.na(all_moviedata$gross),]
+non_gross_df$genres <- factor(non_gross_df$genres)
+
+#Aplicando a mediana quanto ao faturamento de bilheteria
+non_gross_df_avg <- aggregate(non_gross_df$gross ~ non_gross_df$genres, FUN = mean )
+
+#Renomeando as colunas - non_gross_df_avg
+names(non_gross_df_avg)[names(non_gross_df_avg) == 'non_gross_df$gross'] <- 'gross'
+names(non_gross_df_avg)[names(non_gross_df_avg) == 'non_gross_df$genres'] <- 'genres'
+non_gross_df_avg <- non_gross_df_avg[order(non_gross_df_avg$genres),]
+
+#Calcualando orcamento por genero
+non_budget_df <- all_moviedata[!is.na(all_moviedata$budget),]
+non_budget_df$genres <- factor(non_budget_df$genres)
+
+#Agregando os valores do orcamento com base no genero e aplicando a funcao media
+non_budget_df_avg <- aggregate(non_budget_df$budget ~ non_budget_df$genres, FUN = mean )
+
+#Renomeando as colunas do datframe recem criado
+names(non_budget_df_avg)[names(non_budget_df_avg) == 'non_budget_df$budget'] <- 'budget'
+names(non_budget_df_avg)[names(non_budget_df_avg) == 'non_budget_df$genres'] <- 'genres'
+non_budget_df_avg <- non_budget_df_avg[order(non_budget_df_avg$genres),]
+
+#Combinando os recem criados dataframes de orcamento e ganho de bilheteria
+budget_gross_df <- cbind(non_gross_df_avg,non_budget_df_avg)
+budget_gross_df <- budget_gross_df[,-3]
+
+# Plotando o orcamento medio e os valores medios brutos de cada genero
+budget_gross_df.melt <- melt(budget_gross_df, id.vars='genres')
+
+p2 <- ggplot(budget_gross_df.melt, aes(genres, value/1000000)) + 
+  ggtitle("Ganho medio vs Orcamento medio por genero [em milhoes]") +  
+  geom_bar(aes(fill = variable), position = "dodge", stat="identity") +
+  ylab("Value (In Millions)") + xlab("Genres") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+  theme(plot.title = element_text(face="bold")) +
+  theme(axis.title.x = element_text( face="bold")) +
+  theme(axis.title.y = element_text( face="bold"))  
+p2
+```
